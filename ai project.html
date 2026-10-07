@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plastic Waste Co-Pyrolysis Yield Simulator</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & React-DOM CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel CDN -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Recharts CDN -->
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+
+  <style>
+    body {
+      background-color: #0f172a;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+    const { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } = Recharts;
+
+    const POLYMERS = {
+      hdpe: { name: 'HDPE (High-Density Polyethylene)', c: 85.7, h: 14.3, o: 0, n: 0, s: 0, cl: 0, vm: 99.5, ash: 0.1, baseOil: 82, baseGas: 15, baseChar: 3 },
+      ldpe: { name: 'LDPE (Low-Density Polyethylene)', c: 85.5, h: 14.2, o: 0.1, n: 0, s: 0, cl: 0, vm: 99.2, ash: 0.2, baseOil: 80, baseGas: 17, baseChar: 3 },
+      pp: { name: 'PP (Polypropylene)', c: 85.6, h: 14.4, o: 0, n: 0, s: 0, cl: 0, vm: 99.6, ash: 0.1, baseOil: 85, baseGas: 13, baseChar: 2 },
+      ps: { name: 'PS (Polystyrene)', c: 92.2, h: 7.8, o: 0, n: 0, s: 0, cl: 0, vm: 99.4, ash: 0.2, baseOil: 88, baseGas: 8, baseChar: 4 },
+      pet: { name: 'PET (Polyethylene Terephthalate)', c: 62.5, h: 4.2, o: 33.3, n: 0, s: 0, cl: 0, vm: 86.0, ash: 1.5, baseOil: 38, baseGas: 45, baseChar: 17 },
+      pvc: { name: 'PVC (Polyvinyl Chloride)', c: 38.4, h: 4.8, o: 0, n: 0, s: 0, cl: 56.8, vm: 94.0, ash: 2.0, baseOil: 20, baseGas: 52, baseChar: 28 },
+      tire: { name: 'Scrap Rubber Tires', c: 83.0, h: 7.1, o: 2.5, n: 0.4, s: 2.1, cl: 0, vm: 66.0, ash: 8.5, baseOil: 45, baseGas: 18, baseChar: 37 }
+    };
+
+    function App() {
+      const [blend, setBlend] = useState({ hdpe: 40, ldpe: 0, pp: 0, ps: 60, pet: 0, pvc: 0, tire: 0 });
+      const [feedMass, setFeedMass] = useState(100);
+      const [temp, setTemp] = useState(500);
+      const [heatingRate, setHeatingRate] = useState(50);
+      const [catalyst, setCatalyst] = useState('none');
+
+      const totalBlendPct = useMemo(() => Object.values(blend).reduce((a, b) => a + b, 0), [blend]);
+
+      const handleBlendChange = (key, val) => {
+        setBlend(prev => ({ ...prev, [key]: Math.max(0, Math.min(100, Number(val))) }));
+      };
+
+      const normalizeBlend = () => {
+        if (totalBlendPct === 0) return;
+        const factor = 100 / totalBlendPct;
+        const newBlend = {};
+        Object.keys(blend).forEach(k => { newBlend[k] = Math.round(blend[k] * factor * 10) / 10; });
+        setBlend(newBlend);
+      };
+
+      const calculatedUlt = useMemo(() => {
+        if (totalBlendPct === 0) return { c: 0, h: 0, o: 0, n: 0, s: 0, cl: 0, ash: 0, vm: 100 };
+        let c = 0, h = 0, o = 0, n = 0, s = 0, cl = 0, ash = 0, vm = 0;
+        Object.keys(blend).forEach(k => {
+          const w = (blend[k] / totalBlendPct);
+          const p = POLYMERS[k];
+          c += p.c * w; h += p.h * w; o += p.o * w; n += p.n * w; s += p.s * w; cl += p.cl * w; ash += p.ash * w; vm += p.vm * w;
+        });
+        return { c: c.toFixed(1), h: h.toFixed(1), o: o.toFixed(1), n: n.toFixed(1), s: s.toFixed(1), cl: cl.toFixed(1), ash: ash.toFixed(1), vm: vm.toFixed(1) };
+      }, [blend, totalBlendPct]);
+
+      const computeYieldsAtT = (T) => {
+        if (totalBlendPct === 0) return { oil: 0, gas: 0, char: 0, wax: 0, oilKg: 0, gasKg: 0, charKg: 0, waxKg: 0 };
+        let wOil = 0, wGas = 0, wChar = 0;
+        Object.keys(blend).forEach(k => {
+          const frac = blend[k] / totalBlendPct;
+          const p = POLYMERS[k];
+          let o = p.baseOil, g = p.baseGas, c = p.baseChar;
+
+          if (T < 420) {
+            o *= 0.4; g *= 0.5; c += (100 - (o + g + c));
+          } else if (T > 600) {
+            const shift = (T - 600) * 0.08;
+            o = Math.max(10, o - shift); g += shift;
+          }
+
+          if (catalyst === 'zsm5') { o -= 8; g += 10; c -= 2; }
+          else if (catalyst === 'fcc') { o += 5; g -= 3; c -= 2; }
+
+          wOil += o * frac; wGas += g * frac; wChar += c * frac;
+        });
+
+        let waxPct = 0;
+        if (T < 460) {
+          waxPct = wOil * 0.25;
+          wOil *= 0.75;
+        }
+
+        const sum = wOil + wGas + wChar + waxPct;
+        const normOil = (wOil / sum) * 100;
+        const normGas = (wGas / sum) * 100;
+        const normChar = (wChar / sum) * 100;
+        const normWax = (waxPct / sum) * 100;
+
+        return {
+          oil: normOil, gas: normGas, char: normChar, wax: normWax,
+          oilKg: (normOil * feedMass) / 100, gasKg: (normGas * feedMass) / 100,
+          charKg: (normChar * feedMass) / 100, waxKg: (normWax * feedMass) / 100
+        };
+      };
+
+      const yields = useMemo(() => computeYieldsAtT(temp), [temp, blend, totalBlendPct, feedMass, catalyst]);
+
+      const chartData = [
+        { name: 'Pyrolysis Oil', value: parseFloat(yields.oilKg.toFixed(2)), color: '#3b82f6' },
+        { name: 'Non-Condensable Gas', value: parseFloat(yields.gasKg.toFixed(2)), color: '#10b981' },
+        { name: 'Char Residue', value: parseFloat(yields.charKg.toFixed(2)), color: '#f59e0b' },
+        { name: 'Heavy Wax Fraction', value: parseFloat(yields.waxKg.toFixed(2)), color: '#8b5cf6' }
+      ].filter(i => i.value > 0);
+
+      const tempCurve = useMemo(() => {
+        const pts = [];
+        for (let t = 350; t <= 750; t += 50) {
+          const r = computeYieldsAtT(t);
+          pts.push({ temp: `${t}°C`, Oil: parseFloat(r.oil.toFixed(1)), Gas: parseFloat(r.gas.toFixed(1)), Char: parseFloat(r.char.toFixed(1)), Wax: parseFloat(r.wax.toFixed(1)) });
+        }
+        return pts;
+      }, [blend, totalBlendPct, feedMass, catalyst]);
+
+      const hhv = useMemo(() => {
+        const c = parseFloat(calculatedUlt.c), h = parseFloat(calculatedUlt.h), o = parseFloat(calculatedUlt.o), s = parseFloat(calculatedUlt.s);
+        return Math.max(12, 0.3383 * c + 1.422 * (h - o / 8) + 0.095 * s).toFixed(2);
+      }, [calculatedUlt]);
+
+      return (
+        <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8">
+          <header className="max-w-7xl mx-auto mb-8 text-center border-b border-slate-800 pb-6">
+            <h1 className="text-3xl font-bold text-blue-400">Plastic Waste Co-Pyrolysis Yield Simulator</h1>
+            <p className="text-slate-400 text-sm mt-2">Thermochemical mass balance & product distribution model for mixed plastic feeds</p>
+          </header>
+
+          <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div className="lg:col-span-5 bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-6">
+              <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+                <h2 className="text-lg font-semibold">Feedstock Mixture Composition</h2>
+                {totalBlendPct !== 100 && (
+                  <button onClick={normalizeBlend} className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded">
+                    Auto-balance to 100% ({totalBlendPct}%)
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                {Object.keys(POLYMERS).map(key => (
+                  <div key={key}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-300 font-medium">{POLYMERS[key].name}</span>
+                      <span className="text-blue-400 font-bold">{blend[key]} %</span>
+                    </div>
+                    <input
+                      type="range" min="0" max="100" value={blend[key]}
+                      onChange={(e) => handleBlendChange(key, e.target.value)}
+                      className="w-full accent-blue-500 h-1.5 bg-slate-700 rounded-lg cursor-pointer"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="pt-4 border-t border-slate-700 space-y-4">
+                <h3 className="text-sm font-semibold">Process Conditions</h3>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span>Batch Mass</span>
+                    <span className="text-amber-400 font-bold">{feedMass} kg</span>
+                  </div>
+                  <input type="range" min="10" max="1000" step="10" value={feedMass} onChange={(e) => setFeedMass(Number(e.target.value))} className="w-full accent-amber-500 h-1.5 bg-slate-700 rounded" />
+                </div>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span>Pyrolysis Temperature</span>
+                    <span className="text-amber-400 font-bold">{temp} °C</span>
+                  </div>
+                  <input type="range" min="350" max="750" step="10" value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="w-full accent-amber-500 h-1.5 bg-slate-700 rounded" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-300 block mb-1">Catalyst System</label>
+                  <select value={catalyst} onChange={(e) => setCatalyst(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200">
+                    <option value="none">Thermal Pyrolysis (Non-Catalytic)</option>
+                    <option value="zsm5">ZSM-5 Zeolite (High Gas / Gasoline Cut)</option>
+                    <option value="fcc">Spent FCC Catalyst (Enhanced Liquid Yield)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-7 space-y-6">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="bg-slate-800 p-4 rounded-xl border border-blue-500/30 text-center">
+                  <span className="text-xs font-semibold text-blue-400">PYROLYSIS OIL</span>
+                  <p className="text-2xl font-bold mt-1">{yields.oilKg.toFixed(1)} <span className="text-xs text-slate-400">kg</span></p>
+                  <p className="text-xs text-slate-400 mt-0.5">{yields.oil.toFixed(1)} wt%</p>
+                </div>
+                <div className="bg-slate-800 p-4 rounded-xl border border-emerald-500/30 text-center">
+                  <span className="text-xs font-semibold text-emerald-400">SYNGAS / GAS</span>
+                  <p className="text-2xl font-bold mt-1">{yields.gasKg.toFixed(1)} <span className="text-xs text-slate-400">kg</span></p>
+                  <p className="text-xs text-slate-400 mt-0.5">{yields.gas.toFixed(1)} wt%</p>
+                </div>
+                <div className="bg-slate-800 p-4 rounded-xl border border-amber-500/30 text-center">
+                  <span className="text-xs font-semibold text-amber-400">CHAR RESIDUE</span>
+                  <p className="text-2xl font-bold mt-1">{yields.charKg.toFixed(1)} <span className="text-xs text-slate-400">kg</span></p>
+                  <p className="text-xs text-slate-400 mt-0.5">{yields.char.toFixed(1)} wt%</p>
+                </div>
+                <div className="bg-slate-800 p-4 rounded-xl border border-purple-500/30 text-center">
+                  <span className="text-xs font-semibold text-purple-400">WAX FRACTION</span>
+                  <p className="text-2xl font-bold mt-1">{yields.waxKg.toFixed(1)} <span className="text-xs text-slate-400">kg</span></p>
+                  <p className="text-xs text-slate-400 mt-0.5">{yields.wax.toFixed(1)} wt%</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200 mb-4">Mass Balance Breakdown</h3>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={chartData} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={3} dataKey="value">
+                          {chartData.map((e, idx) => <Cell key={idx} fill={e.color} />)}
+                        </Pie>
+                        <Tooltip formatter={(v) => [`${v} kg`, 'Mass']} />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/80 p-4 rounded-lg border border-slate-700/80 space-y-3 text-xs">
+                  <h4 className="font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-800 pb-2">Blend Ultimate Analysis</h4>
+                  <div className="grid grid-cols-2 gap-2 text-slate-400">
+                    <div>Carbon (C): <span className="text-slate-200 font-semibold">{calculatedUlt.c}%</span></div>
+                    <div>Hydrogen (H): <span className="text-slate-200 font-semibold">{calculatedUlt.h}%</span></div>
+                    <div>Oxygen (O): <span className="text-slate-200 font-semibold">{calculatedUlt.o}%</span></div>
+                    <div>Chlorine (Cl): <span className="text-rose-400 font-semibold">{calculatedUlt.cl}%</span></div>
+                    <div>Sulfur (S): <span className="text-slate-200 font-semibold">{calculatedUlt.s}%</span></div>
+                    <div>Ash Content: <span className="text-slate-200 font-semibold">{calculatedUlt.ash}%</span></div>
+                  </div>
+                  <div className="pt-2 border-t border-slate-800 flex justify-between text-slate-300">
+                    <span>Estimated Feed HHV:</span>
+                    <span className="text-amber-400 font-bold">{hhv} MJ/kg</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h3 className="text-sm font-semibold text-slate-200 mb-4">Yield Response Curve across Temperatures (350°C – 750°C)</h3>
+                <div className="h-60">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={tempCurve}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="temp" stroke="#94a3b8" />
+                      <YAxis unit="%" stroke="#94a3b8" />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="Oil" stroke="#3b82f6" strokeWidth={2} name="Oil wt%" />
+                      <Line type="monotone" dataKey="Gas" stroke="#10b981" strokeWidth={2} name="Gas wt%" />
+                      <Line type="monotone" dataKey="Char" stroke="#f59e0b" strokeWidth={2} name="Char wt%" />
+                      <Line type="monotone" dataKey="Wax" stroke="#8b5cf6" strokeWidth={2} name="Wax wt%" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
